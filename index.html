@@ -35,8 +35,8 @@
 </head>
 <body>
 <main>
-  <h1>แยก PDF เป็นไฟล์ละ 1 หน้า</h1>
-  <p class="sub">อัปโหลด PDF หลายหน้า แล้วโปรแกรมจะแยกเป็น invoice01.pdf, invoice02.pdf, … ให้อัตโนมัติ<br>ไฟล์ประมวลผลในเบราว์เซอร์ของคุณเท่านั้น ไม่ถูกส่งขึ้นเซิร์ฟเวอร์</p>
+  <h1>แยก PDF เป็นหลายไฟล์</h1>
+  <p class="sub">อัปโหลด PDF หลายหน้า กำหนดว่าจะให้ไฟล์ละกี่หน้า แล้วโปรแกรมจะแยกเป็น invoice01.pdf, invoice02.pdf, … ให้อัตโนมัติ<br>ไฟล์ประมวลผลในเบราว์เซอร์ของคุณเท่านั้น ไม่ถูกส่งขึ้นเซิร์ฟเวอร์</p>
 
   <div class="card">
     <div id="drop">
@@ -51,6 +51,8 @@
       <input type="text" id="prefix" value="invoice">
       <label for="start">เลขเริ่มต้น</label>
       <input type="number" id="start" value="1" min="0">
+      <label for="perFile">จำนวนหน้าต่อไฟล์</label>
+      <input type="number" id="perFile" value="1" min="1" step="1">
       <button id="split" disabled>แยกหน้า</button>
     </div>
     <div id="status"></div>
@@ -105,7 +107,7 @@ logEvent('เข้าหน้าเว็บ');
 
 const $ = id => document.getElementById(id);
 const drop = $('drop'), fileInput = $('file'), splitBtn = $('split'), statusEl = $('status');
-let pdfFile = null, outputs = [], urls = [];
+let pdfFile = null, outputs = [], urls = [], lastTotal = 0, lastPerFile = 1;
 
 function setStatus(msg, err = false) { statusEl.textContent = msg; statusEl.className = err ? 'err' : ''; }
 
@@ -137,22 +139,33 @@ splitBtn.onclick = async () => {
   urls.forEach(u => URL.revokeObjectURL(u)); urls = []; outputs = [];
   const prefix = ($('prefix').value.trim() || 'invoice').replace(/[\\/:*?"<>|]/g, '_');
   const start = Math.max(0, parseInt($('start').value, 10) || 0);
+  const perFile = parseInt($('perFile').value, 10);
+  if (!Number.isInteger(perFile) || perFile < 1) {
+    setStatus('จำนวนหน้าต่อไฟล์ต้องเป็นตัวเลขตั้งแต่ 1 ขึ้นไป', true);
+    splitBtn.disabled = false; return;
+  }
   try {
     setStatus('กำลังอ่านไฟล์…');
     const src = await PDFLib.PDFDocument.load(await pdfFile.arrayBuffer(), { ignoreEncryption: true });
     const total = src.getPageCount();
-    for (let i = 0; i < total; i++) {
-      setStatus(`กำลังแยกหน้า ${i + 1} / ${total}…`);
+    const fileCount = Math.ceil(total / perFile);
+    for (let f = 0; f < fileCount; f++) {
+      const from = f * perFile, to = Math.min(from + perFile, total); // หน้า [from, to)
+      setStatus(`กำลังสร้างไฟล์ ${f + 1} / ${fileCount}…`);
       const doc = await PDFLib.PDFDocument.create();
-      const [page] = await doc.copyPages(src, [i]);
-      doc.addPage(page);
+      const idx = Array.from({ length: to - from }, (_, k) => from + k);
+      (await doc.copyPages(src, idx)).forEach(p => doc.addPage(p));
       const bytes = await doc.save();
-      outputs.push({ name: `${prefix}${runNo(start + i)}.pdf`, bytes });
+      outputs.push({ name: `${prefix}${runNo(start + f)}.pdf`, bytes, from: from + 1, to });
     }
+    lastTotal = total; lastPerFile = perFile;
     render();
-    setStatus('เสร็จแล้ว ✔');
-    logEvent('แยกหน้า', { file: pdfFile.name, pages: total,
-      exported: `${outputs[0].name} – ${outputs[outputs.length - 1].name}` });
+    const rem = total % perFile;
+    setStatus(rem && perFile > 1
+      ? `เสร็จแล้ว ✔ (PDF มี ${total} หน้า ไฟล์สุดท้ายจึงมี ${rem} หน้า)`
+      : 'เสร็จแล้ว ✔');
+    logEvent('แยกหน้า', { file: pdfFile.name, pages: total, perFile,
+      exported: `${outputs[0].name} – ${outputs[outputs.length - 1].name} (${outputs.length} ไฟล์)` });
   } catch (err) {
     console.error(err);
     setStatus('แยกไฟล์ไม่สำเร็จ: ' + (err.message || err), true);
@@ -167,9 +180,10 @@ function render() {
     const url = URL.createObjectURL(new Blob([o.bytes], { type: 'application/pdf' }));
     urls.push(url);
     const li = document.createElement('li');
-    li.innerHTML = `<span>${o.name}</span><a href="${url}" download="${o.name}">ดาวน์โหลด</a>`;
+    const range = o.from === o.to ? `หน้า ${o.from}` : `หน้า ${o.from}–${o.to}`;
+    li.innerHTML = `<span>${o.name} <small style="color:var(--muted)">(${range})</small></span><a href="${url}" download="${o.name}">ดาวน์โหลด</a>`;
     li.querySelector('a').addEventListener('click', () =>
-      logEvent('Export ไฟล์เดี่ยว', { file: pdfFile.name, pages: outputs.length, exported: o.name }));
+      logEvent('Export ไฟล์เดี่ยว', { file: pdfFile.name, pages: lastTotal, perFile: lastPerFile, exported: `${o.name} (${range})` }));
     list.appendChild(li);
   });
   $('count').textContent = `แยกได้ ${outputs.length} ไฟล์`;
@@ -187,7 +201,7 @@ $('zip').onclick = async () => {
     a.download = ($('prefix').value.trim() || 'invoice') + 's.zip';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    logEvent('Export ZIP', { file: pdfFile.name, pages: outputs.length,
+    logEvent('Export ZIP', { file: pdfFile.name, pages: lastTotal, perFile: lastPerFile,
       exported: `${a.download} (${outputs.length} ไฟล์)` });
   } finally {
     btn.disabled = false; btn.textContent = 'ดาวน์โหลดทั้งหมด (ZIP)';
