@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF Invoice Splitter – แยก PDF ทีละหน้า</title>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2330; --muted:#6b7280; --accent:#2563eb; --line:#e3e6eb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Sarabun","Noto Sans Thai",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:760px; margin:40px auto; padding:0 16px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  p.sub { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px; margin-bottom:20px; }
+  #drop { border:2px dashed #b9c2d0; border-radius:10px; padding:40px 16px; text-align:center; cursor:pointer; transition:.15s; }
+  #drop.over { border-color:var(--accent); background:#eef3ff; }
+  #drop strong { color:var(--accent); }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:16px; }
+  label { font-size:14px; color:var(--muted); }
+  input[type=number], input[type=text] { padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:15px; width:120px; }
+  button { padding:10px 18px; border:0; border-radius:8px; font-size:15px; cursor:pointer; background:var(--accent); color:#fff; font-family:inherit; }
+  button.secondary { background:#eef1f5; color:var(--ink); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #status { margin-top:14px; font-size:14px; color:var(--muted); min-height:20px; }
+  #status.err { color:#c0262d; }
+  ul#list { list-style:none; padding:0; margin:0; }
+  ul#list li { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); }
+  ul#list li:last-child { border-bottom:0; }
+  ul#list a { color:var(--accent); text-decoration:none; font-size:14px; }
+  .hidden { display:none; }
+  footer { color:var(--muted); font-size:13px; text-align:center; margin:30px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>แยก PDF เป็นไฟล์ละ 1 หน้า</h1>
+  <p class="sub">อัปโหลด PDF หลายหน้า แล้วโปรแกรมจะแยกเป็น invoice01.pdf, invoice02.pdf, … ให้อัตโนมัติ<br>ไฟล์ประมวลผลในเบราว์เซอร์ของคุณเท่านั้น ไม่ถูกส่งขึ้นเซิร์ฟเวอร์</p>
+
+  <div class="card">
+    <div id="drop">
+      <div style="font-size:40px">📄</div>
+      <div>ลากไฟล์ PDF มาวางที่นี่ หรือ <strong>คลิกเพื่อเลือกไฟล์</strong></div>
+      <div id="fname" style="margin-top:8px;color:var(--muted);font-size:14px"></div>
+    </div>
+    <input type="file" id="file" accept="application/pdf,.pdf" class="hidden">
+
+    <div class="row">
+      <label for="prefix">ชื่อไฟล์</label>
+      <input type="text" id="prefix" value="invoice">
+      <label for="start">เลขเริ่มต้น</label>
+      <input type="number" id="start" value="1" min="0">
+      <button id="split" disabled>แยกหน้า</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="card hidden" id="result">
+    <div class="row" style="margin-top:0;justify-content:space-between">
+      <strong id="count"></strong>
+      <button id="zip">ดาวน์โหลดทั้งหมด (ZIP)</button>
+    </div>
+    <ul id="list" style="margin-top:12px"></ul>
+  </div>
+
+  <footer>PDF Invoice Splitter · ใช้ pdf-lib และ JSZip</footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const drop = $('drop'), fileInput = $('file'), splitBtn = $('split'), statusEl = $('status');
+let pdfFile = null, outputs = [], urls = [];
+
+function setStatus(msg, err = false) { statusEl.textContent = msg; statusEl.className = err ? 'err' : ''; }
+
+function pickFile(f) {
+  if (!f) return;
+  if (f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) {
+    setStatus('กรุณาเลือกไฟล์ PDF เท่านั้น', true); return;
+  }
+  pdfFile = f;
+  $('fname').textContent = f.name + ' (' + (f.size / 1024 / 1024).toFixed(2) + ' MB)';
+  splitBtn.disabled = false;
+  setStatus('');
+  $('result').classList.add('hidden');
+}
+
+drop.onclick = () => fileInput.click();
+fileInput.onchange = e => pickFile(e.target.files[0]);
+['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => pickFile(e.dataTransfer.files[0]));
+
+// เลขรัน 2 หลักขั้นต่ำ: 01..99, 100, 101 ...
+const runNo = n => String(n).padStart(2, '0');
+
+splitBtn.onclick = async () => {
+  if (!pdfFile) return;
+  splitBtn.disabled = true;
+  urls.forEach(u => URL.revokeObjectURL(u)); urls = []; outputs = [];
+  const prefix = ($('prefix').value.trim() || 'invoice').replace(/[\\/:*?"<>|]/g, '_');
+  const start = Math.max(0, parseInt($('start').value, 10) || 0);
+  try {
+    setStatus('กำลังอ่านไฟล์…');
+    const src = await PDFLib.PDFDocument.load(await pdfFile.arrayBuffer(), { ignoreEncryption: true });
+    const total = src.getPageCount();
+    for (let i = 0; i < total; i++) {
+      setStatus(`กำลังแยกหน้า ${i + 1} / ${total}…`);
+      const doc = await PDFLib.PDFDocument.create();
+      const [page] = await doc.copyPages(src, [i]);
+      doc.addPage(page);
+      const bytes = await doc.save();
+      outputs.push({ name: `${prefix}${runNo(start + i)}.pdf`, bytes });
+    }
+    render();
+    setStatus('เสร็จแล้ว ✔');
+  } catch (err) {
+    console.error(err);
+    setStatus('แยกไฟล์ไม่สำเร็จ: ' + (err.message || err), true);
+  } finally {
+    splitBtn.disabled = false;
+  }
+};
+
+function render() {
+  const list = $('list'); list.innerHTML = '';
+  outputs.forEach(o => {
+    const url = URL.createObjectURL(new Blob([o.bytes], { type: 'application/pdf' }));
+    urls.push(url);
+    const li = document.createElement('li');
+    li.innerHTML = `<span>${o.name}</span><a href="${url}" download="${o.name}">ดาวน์โหลด</a>`;
+    list.appendChild(li);
+  });
+  $('count').textContent = `แยกได้ ${outputs.length} ไฟล์`;
+  $('result').classList.remove('hidden');
+}
+
+$('zip').onclick = async () => {
+  const btn = $('zip'); btn.disabled = true; btn.textContent = 'กำลังสร้าง ZIP…';
+  try {
+    const zip = new JSZip();
+    outputs.forEach(o => zip.file(o.name, o.bytes));
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = ($('prefix').value.trim() || 'invoice') + 's.zip';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } finally {
+    btn.disabled = false; btn.textContent = 'ดาวน์โหลดทั้งหมด (ZIP)';
+  }
+};
+</script>
+</body>
+</html>
