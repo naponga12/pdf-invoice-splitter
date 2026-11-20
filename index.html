@@ -68,6 +68,41 @@
 </main>
 
 <script>
+// ===== บันทึกการใช้งานลง Google Sheet (ผ่าน Google Apps Script) =====
+const LOG_URL = 'https://script.google.com/macros/s/AKfycbztzmkM9uc5wLemOr5q4gZAXAX9iaUdRKZ0NWKcmcnNA0SKIAb57_NBgBlx3y5aJ62J/exec';
+
+function deviceInfo() {
+  const ua = navigator.userAgent;
+  let browser = 'อื่นๆ';
+  if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/OPR\/|Opera/.test(ua)) browser = 'Opera';
+  else if (/SamsungBrowser/.test(ua)) browser = 'Samsung Internet';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  else if (/Chrome\//.test(ua)) browser = 'Chrome';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+  const v = (ua.match(/(Edg|OPR|Firefox|Chrome|Version)\/([\d]+)/) || [])[2];
+  if (v) browser += ' ' + v;
+  let os = 'อื่นๆ';
+  if (/Windows/.test(ua)) os = 'Windows';
+  else if (/Android/.test(ua)) os = 'Android';
+  else if (/iPhone|iPad|iPod/.test(ua)) os = 'iOS';
+  else if (/Mac OS X/.test(ua)) os = 'macOS';
+  else if (/Linux/.test(ua)) os = 'Linux';
+  const type = /Mobi|Android|iPhone/.test(ua) ? 'มือถือ' : (/iPad|Tablet/.test(ua) ? 'แท็บเล็ต' : 'คอมพิวเตอร์');
+  return { browser, device: `${type} (${os})` };
+}
+
+function logEvent(event, data = {}) {
+  if (!LOG_URL || LOG_URL.startsWith('__')) return;
+  const body = JSON.stringify({ event, ...deviceInfo(), ...data });
+  try {
+    fetch(LOG_URL, { method: 'POST', mode: 'no-cors', keepalive: true,
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body });
+  } catch (e) { /* ไม่ให้การ log ทำให้โปรแกรมพัง */ }
+}
+
+logEvent('เข้าหน้าเว็บ');
+
 const $ = id => document.getElementById(id);
 const drop = $('drop'), fileInput = $('file'), splitBtn = $('split'), statusEl = $('status');
 let pdfFile = null, outputs = [], urls = [];
@@ -84,6 +119,7 @@ function pickFile(f) {
   splitBtn.disabled = false;
   setStatus('');
   $('result').classList.add('hidden');
+  logEvent('อัปโหลด', { file: f.name });
 }
 
 drop.onclick = () => fileInput.click();
@@ -115,6 +151,8 @@ splitBtn.onclick = async () => {
     }
     render();
     setStatus('เสร็จแล้ว ✔');
+    logEvent('แยกหน้า', { file: pdfFile.name, pages: total,
+      exported: `${outputs[0].name} – ${outputs[outputs.length - 1].name}` });
   } catch (err) {
     console.error(err);
     setStatus('แยกไฟล์ไม่สำเร็จ: ' + (err.message || err), true);
@@ -130,6 +168,8 @@ function render() {
     urls.push(url);
     const li = document.createElement('li');
     li.innerHTML = `<span>${o.name}</span><a href="${url}" download="${o.name}">ดาวน์โหลด</a>`;
+    li.querySelector('a').addEventListener('click', () =>
+      logEvent('Export ไฟล์เดี่ยว', { file: pdfFile.name, pages: outputs.length, exported: o.name }));
     list.appendChild(li);
   });
   $('count').textContent = `แยกได้ ${outputs.length} ไฟล์`;
@@ -147,6 +187,8 @@ $('zip').onclick = async () => {
     a.download = ($('prefix').value.trim() || 'invoice') + 's.zip';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    logEvent('Export ZIP', { file: pdfFile.name, pages: outputs.length,
+      exported: `${a.download} (${outputs.length} ไฟล์)` });
   } finally {
     btn.disabled = false; btn.textContent = 'ดาวน์โหลดทั้งหมด (ZIP)';
   }
